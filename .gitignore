@@ -1,0 +1,15 @@
+.env
+
+data/raw/
+data/processed/
+
+models/*.bin
+models/*.safetensors
+models/*.onnx
+
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+logs/*.jsonl
