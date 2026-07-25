@@ -22,9 +22,7 @@ async def lifespan(app: FastAPI):
     yield
     await app.state.http_client.aclose()
 
-
 limiter = Limiter(key_func=get_remote_address)
-
 app = FastAPI(
     title="FortifyLLM",
     description="Enterprise-grade security proxy for mitigating adversarial prompt injection.",
@@ -39,13 +37,11 @@ class ChatMessage(BaseModel):
     role: str
     content: str = Field(..., max_length=config.MAX_PROMPT_LENGTH)
 
-
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
     temperature: Optional[float] = 1.0
     stream: Optional[bool] = False
-
 
 #2. Auth (protects YOUR endpoint — separate from the OpenAI key you hold)
 def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
@@ -73,10 +69,8 @@ def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
     reason = f"Matched heuristic signature: '{matched}' (score={score:.2f})" if matched else None
     return is_blocked, reason, score
 
-
 async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], float]:
     """Tier 2: Machine Learning Classification.
-
     Placeholder for the fine-tuned DistilBERT/Transformers model (Week 2).
     """
     # TODO: Week 2 - load local transformer weights and run inference here.
@@ -87,7 +81,8 @@ async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], flo
     return False, None, score
 
 
-#4. Logging (JSONL now; swap for Postgres/SQLite in Week 3 without changing callers, since they only see this one function)
+#4. Logging (JSONL now; swap for Postgres/SQLite in Week 3 without
+#   changing callers, since they only see this one function)
 def log_event(event: dict):
     event["timestamp"] = time.time()
     try:
@@ -153,7 +148,7 @@ async def secure_chat_completion(
 
     #Forward to upstream LLM provider
     headers = {
-        "Authorization": f"Bearer {config.OPENAI_API_KEY}",
+        "Authorization": f"Bearer {config.LLM_API_KEY}",
         "Content-Type": "application/json",
     }
 
@@ -165,6 +160,10 @@ async def secure_chat_completion(
             headers=headers,
         )
         if upstream_response.status_code != 200:
+            # Deliberately NOT forwarding upstream's raw status code — 403 is
+            # reserved exclusively for our own firewall block decisions, so
+            # clients/logs/tests can always tell "we blocked this" apart from
+            # "the upstream provider rejected/failed the request."
             log_event({
                 "event": "upstream_error",
                 "upstream_status": upstream_response.status_code,
@@ -190,7 +189,6 @@ async def secure_chat_completion(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Failed to communicate with upstream LLM: {str(exc)}",
         )
-
 
 @app.get("/health")
 def health_check():
