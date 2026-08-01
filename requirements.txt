@@ -7,3 +7,8 @@ slowapi==0.1.10
 uvicorn==0.51.0
 torch
 transformers>=4.40
+datasets
+scikit-learn
+pandas
+accelerate
+openai
