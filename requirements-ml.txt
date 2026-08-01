@@ -1,0 +1,11 @@
+# https://pytorch.org/get-started/locally — check `nvidia-smi` for your
+# CUDA version first, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu132
+# THEN install the rest of this file:
+#   pip install -r requirements-ml.txt
+transformers>=4.40
+datasets
+scikit-learn
+pandas
+accelerate
+openai

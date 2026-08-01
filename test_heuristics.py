@@ -11,7 +11,7 @@ ENDPOINT = f"{BASE_URL}/v1/chat/completions"
 
 # Set to a value from FIREWALL_API_KEYS in your .env if you enabled auth.
 # Leave as None if you haven't set FIREWALL_API_KEYS (auth disabled).
-API_KEY = None
+API_KEY = "0sgmnOWFQCWVL7R_fo5WxQsoto90ALdG6dgm_S6nCdk"
 HEADERS = {"Content-Type": "application/json"}
 if API_KEY:
     HEADERS["X-API-Key"] = API_KEY

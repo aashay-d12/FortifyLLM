@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -7,22 +8,37 @@ from typing import List, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Header, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 import config
+from classifier import classifier
+from demo_ui import DEMO_HTML
 
 # App lifecycle: reuse one HTTP client instead of creating one per request
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
     app.state.http_client = httpx.AsyncClient(timeout=30.0)
+
+    try:
+        classifier.load(config.CLASSIFIER_MODEL_DIR)
+    except FileNotFoundError as e:
+        print(f"[WARN] {e}")
+        print("[WARN] Running in HEURISTIC-ONLY mode — Tier 2 ML checks are disabled.")
+    except Exception as e:
+        # Covers missing torch/transformers, corrupted model files, etc.
+        # Same graceful-degrade principle: don't let a Tier 2 problem take
+        # down Tier 1, which still provides real protection on its own.
+        print(f"[WARN] Failed to load ML classifier ({e}). Running heuristic-only.")
     yield
     await app.state.http_client.aclose()
 
 limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="FortifyLLM",
     description="Enterprise-grade security proxy for mitigating adversarial prompt injection.",
@@ -32,7 +48,7 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-#1. Schemas matching OpenAI Chat Completion Specs
+# 1. Schemas matching OpenAI Chat Completion Specs
 class ChatMessage(BaseModel):
     role: str
     content: str = Field(..., max_length=config.MAX_PROMPT_LENGTH)
@@ -43,7 +59,8 @@ class ChatCompletionRequest(BaseModel):
     temperature: Optional[float] = 1.0
     stream: Optional[bool] = False
 
-#2. Auth (protects YOUR endpoint — separate from the OpenAI key you hold)
+
+# 2. Auth (protects YOUR endpoint — separate from the OpenAI key you hold)
 def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
     if not config.AUTH_ENABLED:
         return  # auth disabled locally when FIREWALL_API_KEYS isn't set
@@ -54,7 +71,7 @@ def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
         )
 
 
-#3. Tiered Inspection Engine
+# 3. Tiered Inspection Engine
 def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
     """Tier 1: High-speed regex/weighted-signature matching."""
     score = 0.0
@@ -71,18 +88,42 @@ def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
 
 async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], float]:
     """Tier 2: Machine Learning Classification.
-    Placeholder for the fine-tuned DistilBERT/Transformers model (Week 2).
+
+    Runs the fine-tuned transformer (see fine_tune_classifier.py / classifier.py).
+    If the classifier failed to load at startup (e.g. not trained yet), this
+    is skipped entirely and Tier 1 heuristics remain the sole line of defense.
     """
-    # TODO: Week 2 - load local transformer weights and run inference here.
-    is_malicious = False
-    score = 0.0
-    if is_malicious:
-        return True, "ML Classifier flagged payload with high adversarial confidence.", score
-    return False, None, score
+    if not classifier.loaded:
+        return False, None, 0.0
+
+    score = await asyncio.to_thread(classifier.predict, prompt)
+
+    is_blocked = score >= config.ML_BLOCK_THRESHOLD
+    reason = (
+        f"ML classifier flagged payload with adversarial confidence {score:.3f} "
+        f"(threshold={config.ML_BLOCK_THRESHOLD})"
+        if is_blocked else None
+    )
+    return is_blocked, reason, score
 
 
-#4. Logging (JSONL now; swap for Postgres/SQLite in Week 3 without
-#   changing callers, since they only see this one function)
+# 4. Shared detection pipeline — used by BOTH the authenticated proxy route
+#    and the public demo endpoint, so detection logic never drifts between
+#    the two surfaces.
+async def run_detection_pipeline(prompt: str) -> dict:
+    is_blocked, reason, h_score = run_heuristic_check(prompt)
+    if is_blocked:
+        return {"blocked": True, "layer": "heuristic", "reason": reason, "score": h_score}
+
+    is_blocked, reason, ml_score = await run_ml_classifier_check(prompt)
+    if is_blocked:
+        return {"blocked": True, "layer": "classifier", "reason": reason, "score": ml_score}
+
+    return {"blocked": False, "layer": None, "reason": None, "score": ml_score}
+
+
+# 5. Logging (JSONL now; swap for Postgres/SQLite in Week 3 without
+#    changing callers, since they only see this one function)
 def log_event(event: dict):
     event["timestamp"] = time.time()
     try:
@@ -93,7 +134,7 @@ def log_event(event: dict):
         print(f"[WARN] Failed to write log: {e}")
 
 
-#5. Interception Route (The Gateway)
+# 5. Interception Route (The Gateway)
 @app.post("/v1/chat/completions", dependencies=[])
 @limiter.limit(config.RATE_LIMIT)
 async def secure_chat_completion(
@@ -118,35 +159,24 @@ async def secure_chat_completion(
     latest_user_prompt = payload.messages[-1].content
     client_ip = get_remote_address(request)
 
-    #Tier 1: Heuristic check
-    is_blocked, reason, h_score = run_heuristic_check(latest_user_prompt)
-    if is_blocked:
+    verdict = await run_detection_pipeline(latest_user_prompt)
+    if verdict["blocked"]:
         log_event({
-            "event": "blocked", "layer": "heuristic", "reason": reason,
-            "score": h_score, "client_ip": client_ip,
+            "event": "blocked", "layer": verdict["layer"], "reason": verdict["reason"],
+            "score": verdict["score"], "client_ip": client_ip,
         })
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={
+        detail = (
+            {
                 "error": "Security Exception",
                 "message": "Malicious activity detected.",
                 "code": "PROMPT_INJECTION_TRIGGERED",
-            },
+            }
+            if verdict["layer"] == "heuristic"
+            else {"error": "Security Exception", "message": "Adversarial intent flagged."}
         )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
-    #Tier 2: ML classifier check
-    is_blocked, reason, ml_score = await run_ml_classifier_check(latest_user_prompt)
-    if is_blocked:
-        log_event({
-            "event": "blocked", "layer": "classifier", "reason": reason,
-            "score": ml_score, "client_ip": client_ip,
-        })
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "Security Exception", "message": "Adversarial intent flagged."},
-        )
-
-    #Forward to upstream LLM provider
+    # Forward to upstream LLM provider
     headers = {
         "Authorization": f"Bearer {config.LLM_API_KEY}",
         "Content-Type": "application/json",
@@ -160,10 +190,6 @@ async def secure_chat_completion(
             headers=headers,
         )
         if upstream_response.status_code != 200:
-            # Deliberately NOT forwarding upstream's raw status code — 403 is
-            # reserved exclusively for our own firewall block decisions, so
-            # clients/logs/tests can always tell "we blocked this" apart from
-            # "the upstream provider rejected/failed the request."
             log_event({
                 "event": "upstream_error",
                 "upstream_status": upstream_response.status_code,
@@ -192,4 +218,89 @@ async def secure_chat_completion(
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": "FortifyLLM Proxy Engine"}
+    return {
+        "status": "healthy",
+        "service": "FortifyLLM Proxy Engine",
+        "ml_classifier_loaded": classifier.loaded,
+    }
+
+
+# 6. Public demo — the "real users" surface. No API key required (it's
+#    public by design), but rate-limited more strictly than the real API,
+#    and the model is fixed server-side so visitors can't pick an
+#    expensive/arbitrary model. Uses the exact same detection pipeline as
+#    the authenticated route above.
+class DemoChatRequest(BaseModel):
+    messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
+
+@app.get("/demo", response_class=HTMLResponse)
+def demo_page():
+    return DEMO_HTML
+
+@app.post("/api/demo-chat")
+@limiter.limit(config.DEMO_RATE_LIMIT)
+async def demo_chat(payload: DemoChatRequest, request: Request):
+    if not payload.messages:
+        raise HTTPException(status_code=400, detail="Messages array cannot be empty.")
+
+    latest_user_prompt = payload.messages[-1].content
+    client_ip = get_remote_address(request)
+
+    verdict = await run_detection_pipeline(latest_user_prompt)
+    if verdict["blocked"]:
+        log_event({
+            "event": "blocked", "layer": verdict["layer"], "reason": verdict["reason"],
+            "score": verdict["score"], "client_ip": client_ip, "source": "demo",
+        })
+        return JSONResponse(content={
+            "blocked": True,
+            "layer": verdict["layer"],
+            "reason": verdict["reason"],
+            "score": verdict["score"],
+        })
+
+    headers = {
+        "Authorization": f"Bearer {config.LLM_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": config.DEMO_MODEL,
+        "messages": [m.model_dump() for m in payload.messages],
+        "temperature": 1.0,
+        "stream": False,
+    }
+
+    client: httpx.AsyncClient = request.app.state.http_client
+    try:
+        upstream_response = await client.post(config.UPSTREAM_URL, json=body, headers=headers)
+        if upstream_response.status_code != 200:
+            log_event({
+                "event": "upstream_error", "upstream_status": upstream_response.status_code,
+                "client_ip": client_ip, "source": "demo",
+            })
+            return JSONResponse(content={
+                "blocked": False,
+                "reply": "(The upstream model is temporarily unavailable. Try again shortly.)",
+            })
+
+        try:
+            data = upstream_response.json()
+            reply_text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError, ValueError):
+            log_event({
+                "event": "upstream_malformed_response", "client_ip": client_ip,
+                "source": "demo", "raw_response": upstream_response.text[:500],
+            })
+            return JSONResponse(content={
+                "blocked": False,
+                "reply": "(Got an unexpected response from the upstream model. Try again.)",
+            })
+
+        log_event({"event": "allowed", "client_ip": client_ip, "source": "demo"})
+        return {"blocked": False, "layer": verdict["layer"], "score": verdict["score"], "reply": reply_text}
+
+    except httpx.RequestError:
+        return JSONResponse(content={
+            "blocked": False,
+            "reply": "(Could not reach the upstream model right now — try again shortly.)",
+        })
