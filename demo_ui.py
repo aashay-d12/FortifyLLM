@@ -164,7 +164,6 @@ DEMO_HTML = """<!DOCTYPE html>
         <div class="status-dot"></div>
         <span class="brand-name">FortifyLLM</span>
       </div>
-      <span class="status-label">heuristic + ml armed</span>
     </div>
     <div class="console-sub">
       A layered firewall sitting in front of an LLM. Every message below is screened
