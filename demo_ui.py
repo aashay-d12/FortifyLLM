@@ -1,12 +1,4 @@
-"""
-HTML for the public FortifyLLM demo page. Kept as a plain string, served
-directly by FastAPI via HTMLResponse — no separate frontend build/deploy
-needed, no CORS to configure, since it's served same-origin from the API
-itself. Talks to POST /api/demo-chat, the public rate-limited endpoint
-(see main.py) — never the authenticated /v1/chat/completions route.
-"""
-
-DEMO_HTML = """<!DOCTYPE html>
+DEMO_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -164,6 +156,7 @@ DEMO_HTML = """<!DOCTYPE html>
         <div class="status-dot"></div>
         <span class="brand-name">FortifyLLM</span>
       </div>
+      <span class="status-label">heuristic + ml armed</span>
     </div>
     <div class="console-sub">
       A layered firewall sitting in front of an LLM. Every message below is screened
@@ -183,6 +176,22 @@ DEMO_HTML = """<!DOCTYPE html>
   const sendBtn = document.getElementById('send');
   let history = [];
 
+  function stripMarkdown(text) {
+    // Converts common LLM markdown into clean plain text for the terminal-
+    // style transcript. Deliberately does NOT render actual HTML — this
+    // stays a plain-text transform so we can keep using .textContent below,
+    // never .innerHTML. Rendering LLM output as raw HTML would be a real
+    // XSS risk (a crafted prompt could get the model to emit <script> tags) —
+    // an especially bad look in a project specifically about prompt-injection
+    // defense, so plain-text-only display is a deliberate safety choice, not
+    // a missing feature.
+    return text
+      .replace(/\*\*(.+?)\*\*/g, '$1')   // **bold** -> bold
+      .replace(/\*(.+?)\*/g, '$1')       // *italic* -> italic
+      .replace(/^#{1,6}\s*(.+)$/gm, '$1') // ## Heading -> Heading
+      .replace(/^[-*]\s+/gm, '  • ');    // - bullet -> • bullet
+  }
+
   function addMessage(role, text, verdict) {
     const div = document.createElement('div');
     if (verdict && verdict.blocked) {
@@ -197,7 +206,7 @@ DEMO_HTML = """<!DOCTYPE html>
       div.className = role === 'user' ? 'msg msg-user' : 'msg msg-bot';
       div.innerHTML = `<div class="msg-label">${role === 'user' ? 'you' : 'assistant'}</div>` +
         `<div class="msg-body"></div>`;
-      div.querySelector('.msg-body').textContent = text;
+      div.querySelector('.msg-body').textContent = role === 'user' ? text : stripMarkdown(text);
     }
     transcript.appendChild(div);
     transcript.scrollTop = transcript.scrollHeight;
