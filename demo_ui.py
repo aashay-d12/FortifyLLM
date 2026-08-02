@@ -156,11 +156,15 @@ DEMO_HTML = r"""<!DOCTYPE html>
         <div class="status-dot"></div>
         <span class="brand-name">FortifyLLM</span>
       </div>
+      <span class="status-label">heuristic + ml armed</span>
     </div>
     <div class="console-sub">
       A layered firewall sitting in front of an LLM. Every message below is screened
       before it ever reaches the model. <b>Try to get something past it</b> —
       every attempt is logged and shown with the detection layer that caught it (if any).
+    </div>
+    <div class="console-sub" id="live-stats" style="font-family:'IBM Plex Mono',monospace;font-size:12px;">
+      loading stats...
     </div>
     <div class="transcript" id="transcript"></div>
     <div class="input-row">
@@ -256,6 +260,18 @@ DEMO_HTML = r"""<!DOCTYPE html>
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
   input.focus();
+
+  // Live counter — safe aggregate numbers only, fetched from the public
+  // stats endpoint (no auth needed, no PII returned).
+  fetch('/api/public-stats')
+    .then(r => r.json())
+    .then(s => {
+      document.getElementById('live-stats').textContent =
+        `${s.messages_screened} messages screened · ${s.attacks_blocked} attacks blocked · ${s.unique_visitors} visitors so far`;
+    })
+    .catch(() => {
+      document.getElementById('live-stats').textContent = '';
+    });
 </script>
 </body>
 </html>
