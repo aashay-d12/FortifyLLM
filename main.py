@@ -17,25 +17,23 @@ from slowapi.util import get_remote_address
 import config
 from classifier import classifier
 from demo_ui import DEMO_HTML
+from stats import compute_stats
+from stats_ui import render_stats_html
 
-# App lifecycle: reuse one HTTP client instead of creating one per request
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
     app.state.http_client = httpx.AsyncClient(timeout=30.0)
-
     try:
         classifier.load(config.CLASSIFIER_MODEL_DIR)
     except FileNotFoundError as e:
         print(f"[WARN] {e}")
         print("[WARN] Running in HEURISTIC-ONLY mode — Tier 2 ML checks are disabled.")
     except Exception as e:
-        # Covers missing torch/transformers, corrupted model files, etc.
-        # Same graceful-degrade principle: don't let a Tier 2 problem take
-        # down Tier 1, which still provides real protection on its own.
         print(f"[WARN] Failed to load ML classifier ({e}). Running heuristic-only.")
     yield
     await app.state.http_client.aclose()
+
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -53,6 +51,7 @@ class ChatMessage(BaseModel):
     role: str
     content: str = Field(..., max_length=config.MAX_PROMPT_LENGTH)
 
+
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
@@ -60,7 +59,7 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
 
 
-# 2. Auth (protects YOUR endpoint — separate from the OpenAI key you hold)
+# 2. Auth (protects the endpoint)
 def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
     if not config.AUTH_ENABLED:
         return  # auth disabled locally when FIREWALL_API_KEYS isn't set
@@ -85,6 +84,7 @@ def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
     is_blocked = score >= config.HEURISTIC_BLOCK_THRESHOLD
     reason = f"Matched heuristic signature: '{matched}' (score={score:.2f})" if matched else None
     return is_blocked, reason, score
+
 
 async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], float]:
     """Tier 2: Machine Learning Classification.
@@ -149,8 +149,6 @@ async def secure_chat_completion(
         raise HTTPException(status_code=400, detail="Messages array cannot be empty.")
 
     if payload.stream:
-        # SSE passthrough isn't implemented yet — reject explicitly rather than
-        # silently breaking on `.json()` against a streamed response.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Streaming is not yet supported by this proxy.",
@@ -225,17 +223,16 @@ def health_check():
     }
 
 
-# 6. Public demo — the "real users" surface. No API key required (it's
-#    public by design), but rate-limited more strictly than the real API,
-#    and the model is fixed server-side so visitors can't pick an
-#    expensive/arbitrary model. Uses the exact same detection pipeline as
-#    the authenticated route above.
+# 6. Public demo — the "real users" surface no API key required (it's
+#    public by design), but rate-limited more strictly than the real API
 class DemoChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
+
 
 @app.get("/demo", response_class=HTMLResponse)
 def demo_page():
     return DEMO_HTML
+
 
 @app.post("/api/demo-chat")
 @limiter.limit(config.DEMO_RATE_LIMIT)
@@ -304,3 +301,25 @@ async def demo_chat(payload: DemoChatRequest, request: Request):
             "blocked": False,
             "reply": "(Could not reach the upstream model right now — try again shortly.)",
         })
+
+
+# 7. Usage stats — a public safe-aggregate counter
+@app.get("/api/public-stats")
+async def public_stats():
+    stats = compute_stats()
+    return {
+        "messages_screened": stats["total_events"],
+        "attacks_blocked": stats["blocked"],
+        "unique_visitors": stats["unique_client_ips"],
+    }
+
+
+@app.get("/stats", response_class=HTMLResponse)
+async def stats_dashboard(key: Optional[str] = None, x_api_key: Optional[str] = Header(default=None)):
+    provided_key = key or x_api_key
+    if config.AUTH_ENABLED and provided_key not in config.FIREWALL_API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Provide a valid key via ?key=... or the X-API-Key header.",
+        )
+    return render_stats_html(compute_stats())
