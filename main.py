@@ -16,28 +16,25 @@ from slowapi.util import get_remote_address
 
 import config
 from classifier import classifier
-from demo_ui import DEMO_HTML
+from demo_ui import render_demo_html
 from stats import compute_stats
 from stats_ui import render_stats_html
 
-# App lifecycle: reuse one HTTP client instead of creating one per request
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(os.path.dirname(config.LOG_FILE) or ".", exist_ok=True)
     app.state.http_client = httpx.AsyncClient(timeout=30.0)
+
     try:
         classifier.load(config.CLASSIFIER_MODEL_DIR)
     except FileNotFoundError as e:
         print(f"[WARN] {e}")
         print("[WARN] Running in HEURISTIC-ONLY mode — Tier 2 ML checks are disabled.")
     except Exception as e:
-        # Covers missing torch/transformers, corrupted model files, etc.
-        # Same graceful-degrade principle: don't let a Tier 2 problem take
-        # down Tier 1, which still provides real protection on its own.
         print(f"[WARN] Failed to load ML classifier ({e}). Running heuristic-only.")
+
     yield
     await app.state.http_client.aclose()
-
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -50,11 +47,10 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Schemas matching OpenAI Chat Completion Specs
 class ChatMessage(BaseModel):
     role: str
     content: str = Field(..., max_length=config.MAX_PROMPT_LENGTH)
-
+    
 class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
@@ -62,7 +58,7 @@ class ChatCompletionRequest(BaseModel):
     stream: Optional[bool] = False
 
 
-# Auth (protects YOUR endpoint — separate from the OpenAI key you hold)
+# 2. Auth
 def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
     if not config.AUTH_ENABLED:
         return  # auth disabled locally when FIREWALL_API_KEYS isn't set
@@ -73,7 +69,7 @@ def verify_firewall_key(x_api_key: Optional[str] = Header(default=None)):
         )
 
 
-# Tiered Inspection Engine
+# 3. Tiered Inspection Engine
 def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
     """Tier 1: High-speed regex/weighted-signature matching."""
     score = 0.0
@@ -89,12 +85,6 @@ def run_heuristic_check(prompt: str) -> tuple[bool, Optional[str], float]:
     return is_blocked, reason, score
 
 async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], float]:
-    """Tier 2: Machine Learning Classification.
-
-    Runs the fine-tuned transformer (see fine_tune_classifier.py / classifier.py).
-    If the classifier failed to load at startup (e.g. not trained yet), this
-    is skipped entirely and Tier 1 heuristics remain the sole line of defense.
-    """
     if not classifier.loaded:
         return False, None, 0.0
     score = await asyncio.to_thread(classifier.predict, prompt)
@@ -107,7 +97,7 @@ async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], flo
     return is_blocked, reason, score
 
 
-# Shared detection pipeline
+# 4. Shared detection pipeline, used by both the authenticated proxy route and the demo endpoint
 async def run_detection_pipeline(prompt: str) -> dict:
     is_blocked, reason, h_score = run_heuristic_check(prompt)
     if is_blocked:
@@ -120,7 +110,7 @@ async def run_detection_pipeline(prompt: str) -> dict:
     return {"blocked": False, "layer": None, "reason": None, "score": ml_score}
 
 
-# Logging (JSONL)
+# 5. Logging
 def log_event(event: dict):
     event["timestamp"] = time.time()
     try:
@@ -131,7 +121,7 @@ def log_event(event: dict):
         print(f"[WARN] Failed to write log: {e}")
 
 
-# Interception Route (The Gateway)
+# Interception Route
 @app.post("/v1/chat/completions", dependencies=[])
 @limiter.limit(config.RATE_LIMIT)
 async def secure_chat_completion(
@@ -220,14 +210,13 @@ def health_check():
     }
 
 
-# Public demo, no API key required, but rate-limited 
-# more strictly than the real API, and the model is fixed 
+# 6. Demo - No API key required (but rate-limited more strictly, and the model is fixed) 
 class DemoChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., max_length=config.MAX_MESSAGES)
 
 @app.get("/demo", response_class=HTMLResponse)
 def demo_page():
-    return DEMO_HTML
+    return render_demo_html(config.UMAMI_WEBSITE_ID)
 
 @app.post("/api/demo-chat")
 @limiter.limit(config.DEMO_RATE_LIMIT)
@@ -297,7 +286,6 @@ async def demo_chat(payload: DemoChatRequest, request: Request):
                 "blocked": False,
                 "reply": "(Got an unexpected response from the upstream model. Try again.)",
             })
-
         total_ms = detection_ms + upstream_ms
         log_event({
             "event": "allowed", "client_ip": client_ip, "source": "demo",
@@ -305,7 +293,6 @@ async def demo_chat(payload: DemoChatRequest, request: Request):
         })
         print(f"[TIMING] detection={detection_ms}ms  upstream(groq)={upstream_ms}ms  total={total_ms}ms")
         return {"blocked": False, "layer": verdict["layer"], "score": verdict["score"], "reply": reply_text}
-
     except httpx.RequestError:
         upstream_ms = round((time.time() - upstream_start) * 1000, 1)
         print(f"[TIMING] detection={detection_ms}ms  upstream FAILED after {upstream_ms}ms")
@@ -315,7 +302,7 @@ async def demo_chat(payload: DemoChatRequest, request: Request):
         })
 
 
-# Usage stats and a private dashboard with a valid API key
+# 7. Usage stats
 @app.get("/api/public-stats")
 async def public_stats():
     stats = compute_stats()
