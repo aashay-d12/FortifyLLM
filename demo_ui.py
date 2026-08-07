@@ -157,12 +157,11 @@ DEMO_HTML = r"""<!DOCTYPE html>
         <div class="status-dot"></div>
         <span class="brand-name">FortifyLLM</span>
       </div>
-      <span class="status-label">heuristic + ml armed</span>
     </div>
     <div class="console-sub">
-      A layered firewall sitting in front of an LLM. Every message below is screened
+      A multi-tier firewall sitting in front of an LLM. Every message is screened
       before it ever reaches the model. <b>Try to get something past it</b> —
-      every attempt is logged and shown with the detection layer that caught it (if any).
+      every attempt is logged and shown with the detection layer that caught it, if any.
     </div>
     <div class="console-sub" id="live-stats" style="font-family:'IBM Plex Mono',monospace;font-size:12px;">
       loading stats...
