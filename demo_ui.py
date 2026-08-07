@@ -7,6 +7,7 @@ DEMO_HTML = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+%%ANALYTICS_SCRIPT%%
 <style>
   :root {
     --bg: #0A0E14;
@@ -156,6 +157,7 @@ DEMO_HTML = r"""<!DOCTYPE html>
         <div class="status-dot"></div>
         <span class="brand-name">FortifyLLM</span>
       </div>
+      <span class="status-label">heuristic + ml armed</span>
     </div>
     <div class="console-sub">
       A layered firewall sitting in front of an LLM. Every message below is screened
@@ -275,3 +277,10 @@ DEMO_HTML = r"""<!DOCTYPE html>
 </body>
 </html>
 """
+
+def render_demo_html(umami_website_id: str = "") -> str:
+    if umami_website_id:
+        script = f'<script defer src="https://cloud.umami.is/script.js" data-website-id="{umami_website_id}"></script>'
+    else:
+        script = ""
+    return DEMO_HTML.replace("%%ANALYTICS_SCRIPT%%", script)
