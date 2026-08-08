@@ -99,6 +99,9 @@ async def run_ml_classifier_check(prompt: str) -> tuple[bool, Optional[str], flo
 
 # 4. Shared detection pipeline, used by both the authenticated proxy route and the demo endpoint
 async def run_detection_pipeline(prompt: str) -> dict:
+    if prompt.strip().lower() in config.GREETING_ALLOWLIST:       # Skip heuristic/ML checks for common greetings 
+        return {"blocked": False, "layer": "allowlist", "reason": None, "score": 0.0}
+
     is_blocked, reason, h_score = run_heuristic_check(prompt)
     if is_blocked:
         return {"blocked": True, "layer": "heuristic", "reason": reason, "score": h_score}
