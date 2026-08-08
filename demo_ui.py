@@ -168,7 +168,7 @@ DEMO_HTML = r"""<!DOCTYPE html>
     </div>
     <div class="transcript" id="transcript"></div>
     <div class="input-row">
-      <input id="input" type="text" placeholder="Type a message, or try to jailbreak me..." autocomplete="off">
+      <input id="input" type="text" placeholder="Type a message..." autocomplete="off">
       <button id="send">SEND</button>
     </div>
   </div>
@@ -199,7 +199,7 @@ DEMO_HTML = r"""<!DOCTYPE html>
     const div = document.createElement('div');
     if (verdict && verdict.blocked) {
       div.className = 'msg msg-blocked';
-      div.innerHTML = `<div class="msg-label">⛔ blocked</div>` +
+      div.innerHTML = `<div class="msg-label">blocked</div>` +
         `<div class="msg-body"></div>` +
         `<div class="verdict-tag"></div>`;
       div.querySelector('.msg-body').textContent = text;
@@ -267,7 +267,7 @@ DEMO_HTML = r"""<!DOCTYPE html>
     .then(r => r.json())
     .then(s => {
       document.getElementById('live-stats').textContent =
-        `${s.messages_screened} messages screened · ${s.attacks_blocked} attacks blocked · ${s.unique_visitors} visitors so far`;
+        `${s.messages_screened} messages screened · ${s.attacks_blocked} attacks blocked · ${s.unique_visitors} visits so far`;
     })
     .catch(() => {
       document.getElementById('live-stats').textContent = '';
