@@ -46,6 +46,13 @@ HEURISTIC_BLOCK_THRESHOLD = float(os.getenv("HEURISTIC_BLOCK_THRESHOLD", "0.7"))
 CLASSIFIER_MODEL_DIR = os.getenv("CLASSIFIER_MODEL_DIR", "models/classifier")
 ML_BLOCK_THRESHOLD = float(os.getenv("ML_BLOCK_THRESHOLD", "0.5"))
 
+# Added greeting allowlist cuz "hello there" and "hi there" are getting blocked by the ML model for some reason.
+GREETING_ALLOWLIST = {
+    "hello", "hi", "hey", "hello there", "hey there", "hi there",
+    "yo", "hey yo", "sup", "wassup", "what's up", "howdy",
+    "morning", "good morning", "good afternoon", "good evening", "greetings",
+}
+
 # Public demo endpoint
 DEMO_RATE_LIMIT = os.getenv("DEMO_RATE_LIMIT", "10/minute")
 DEMO_MODEL = os.getenv("DEMO_MODEL", "llama-3.3-70b-versatile")  # fixed server-side
